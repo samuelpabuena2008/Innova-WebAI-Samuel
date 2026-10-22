@@ -15,13 +15,20 @@ Reglas de seguridad de este módulo:
   código corto, sin el token.
 """
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 import httpx
 import jwt
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from app.providers import modo_real
 
 log = logging.getLogger("auth")
 
@@ -255,3 +262,110 @@ class JwtVerifier:
 
         email = claims.get("email")
         return AuthUser(id=sub, email=email if isinstance(email, str) else None, role=role_from_claims(claims))
+
+
+# ---------------------------------------------------------------------------------------------
+# Configuración por entorno y dependencias de FastAPI
+# ---------------------------------------------------------------------------------------------
+# Variables (el código NO lee el .env: en local las carga `uvicorn --env-file .env`; en producción, los Secrets):
+#   AUTH_MODE            "required" (por defecto) o "disabled" (solo para desarrollo local con mock)
+#   SUPABASE_URL         https://<proyecto>.supabase.co  (de ahí salen el emisor `iss` y el JWKS)
+#   SUPABASE_JWT_SECRET  opcional: secreto HS256 "legado" (proyectos antiguos o tokens previos a rotar claves)
+
+_HOSTS_LOCALES = ("localhost", "127.0.0.1", "::1")
+
+# Al usuario de desarrollo (AUTH_MODE=disabled) no se le da rol admin: ahí no hay nada que administrar.
+USUARIO_DE_DESARROLLO = AuthUser(id="dev-local", email=None, role=ROLE_USER)
+
+
+def auth_mode() -> str:
+    """"required" salvo que AUTH_MODE valga exactamente "disabled" (sin importar mayúsculas).
+
+    Es un interruptor que BAJA la seguridad, así que es estricto a propósito (igual que modo_real()): una
+    errata como "off", "false" o " disabled" deja la autenticación ACTIVADA. Fallar cerrado.
+    """
+    return "disabled" if os.getenv("AUTH_MODE", "required").lower() == "disabled" else "required"
+
+
+def _issuer_desde_entorno() -> Optional[str]:
+    """`iss` esperado a partir de SUPABASE_URL, o None si falta o no es una URL aceptable.
+
+    Solo https (http únicamente hacia localhost, para el Supabase local de desarrollo), sin usuario,
+    ruta, query ni fragmento: es la raíz del proyecto, y de ella cuelgan el emisor y el JWKS.
+    """
+    try:
+        partes = urlparse(os.getenv("SUPABASE_URL", "").strip())
+        host = partes.hostname
+        puerto_ok = partes.port is None or partes.port > 0  # .port lanza ValueError si el puerto es inválido
+    except ValueError:
+        return None
+    if not host or not puerto_ok or partes.username or partes.password:
+        return None
+    if partes.path not in ("", "/") or partes.query or partes.fragment or partes.params:
+        return None
+    if partes.scheme != "https" and not (partes.scheme == "http" and host in _HOSTS_LOCALES):
+        return None
+    return f"{partes.scheme}://{partes.netloc}/auth/v1"
+
+
+@lru_cache(maxsize=1)
+def get_verifier() -> Optional[JwtVerifier]:
+    """Crea el verificador una sola vez (la caché JWKS necesita recordar sus claves). None = sin configurar."""
+    issuer = _issuer_desde_entorno()
+    if issuer is None:
+        log.error("SUPABASE_URL falta o no es válida (se espera https://<proyecto>.supabase.co): "
+                  "la autenticación no está configurada y se rechazarán las peticiones")
+        return None
+    secreto = os.getenv("SUPABASE_JWT_SECRET", "").strip() or None
+    return JwtVerifier(issuer, JwksCache(f"{issuer}/.well-known/jwks.json"), secreto)
+
+
+_bearer = HTTPBearer(auto_error=False, scheme_name="SupabaseJWT", description="Access token (JWT) de Supabase")
+
+
+def _no_autenticado() -> HTTPException:
+    # Mensaje único para TODOS los rechazos: no se le dice a un atacante si el token expiró, tenía mala
+    # firma o la audiencia equivocada. El motivo real queda en los logs.
+    return HTTPException(status_code=401, detail="No autenticado", headers={"WWW-Authenticate": "Bearer"})
+
+
+def _auth_no_disponible() -> HTTPException:
+    return HTTPException(status_code=503, detail="Autenticación no disponible.")
+
+
+def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> AuthUser:
+    """Dependencia de FastAPI: devuelve el usuario del token `Authorization: Bearer ...` o responde 401/503.
+
+    Analogía Java: el filtro de Spring Security que rellena el SecurityContext antes de llegar al controlador.
+    """
+    if auth_mode() == "disabled":
+        # Con el proveedor real se gasta dinero y salen datos a terceros: ahí no se permite el modo abierto.
+        if modo_real():
+            log.error("AUTH_MODE=disabled no está permitido con PROVIDER_MODE=real: petición rechazada")
+            raise _auth_no_disponible()
+        return USUARIO_DE_DESARROLLO
+
+    verificador = get_verifier()
+    if verificador is None:  # exigida pero sin configurar: se cierra (503, es un fallo del servidor, no del usuario)
+        raise _auth_no_disponible()
+    if credentials is None:  # sin cabecera, esquema distinto de Bearer o token vacío
+        raise _no_autenticado()
+
+    try:
+        return verificador.verify(credentials.credentials)
+    except AuthError as exc:
+        log.info("auth rechazada motivo=%s", exc.motivo)
+        raise _no_autenticado() from None
+    except AuthUnavailable as exc:
+        log.warning("auth no disponible motivo=%s", exc.motivo)
+        raise _auth_no_disponible() from None
+
+
+def require_admin(user: AuthUser = Depends(get_current_user)) -> AuthUser:
+    """Dependencia para rutas de administración (MVP-8): 401 si no hay sesión, 403 si no es admin."""
+    if not user.is_admin:
+        log.info("acceso de admin denegado user=%s", user.id)
+        raise HTTPException(status_code=403, detail="No tienes permiso para esta acción.")
+    return user
