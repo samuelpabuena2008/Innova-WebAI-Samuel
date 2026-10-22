@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,6 +13,14 @@ class OrchestrateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+
+
+class MeResponse(BaseModel):
+    """Respuesta de GET /me: la identidad que el backend extrajo del token (nunca algo que mande el cliente)."""
+
+    id: str
+    email: Optional[str] = None
+    role: Literal["usuario", "admin"]
 
 
 class OrchestrateResponse(BaseModel):

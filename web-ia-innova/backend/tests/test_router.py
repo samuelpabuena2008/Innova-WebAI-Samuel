@@ -1,6 +1,7 @@
 """Casos mínimos del informe (sección 16.1). Se ejecutan con: python -m unittest -v"""
 import unittest
 
+from app.auth import USUARIO_DE_DESARROLLO  # estas pruebas llaman a orchestrate() directo: ya "autenticado"
 from app.router import (CLAUDE, LONG_CONTEXT_CHARS, LUNA, NEMOTRON, RULES, SHORT_TASK_CHARS, SOL, TERRA,
                         choose_route, fallback_models)
 
@@ -146,7 +147,8 @@ class TestFallbackPrivado(unittest.TestCase):
         proveedor.generate.side_effect = ProviderError("caído")
         with patch("app.main.get_provider", return_value=proveedor):
             with self.assertRaises(HTTPException) as ctx:
-                orchestrate(OrchestrateRequest(message="Resume este texto confidencial de nómina"))
+                orchestrate(OrchestrateRequest(message="Resume este texto confidencial de nómina"),
+                            user=USUARIO_DE_DESARROLLO)
         self.assertEqual(ctx.exception.status_code, 502)
         # Solo se intentó el modelo controlado: el texto no salió a ningún otro proveedor.
         self.assertEqual(proveedor.generate.call_count, 1)
@@ -276,7 +278,7 @@ class TestRutaPrivadaFalloCerrado(unittest.TestCase):
                 os.environ.pop("PRIVATE_ROUTE_URL", None)
             with patch("app.main.get_provider", return_value=proveedor):
                 try:
-                    resp = orchestrate(OrchestrateRequest(message=mensaje))
+                    resp = orchestrate(OrchestrateRequest(message=mensaje), user=USUARIO_DE_DESARROLLO)
                 except Exception as exc:  # HTTPException
                     return proveedor, exc
         return proveedor, resp

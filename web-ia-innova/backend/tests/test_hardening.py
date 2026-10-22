@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 
+from app.auth import USUARIO_DE_DESARROLLO  # llamada directa a orchestrate(): ya "autenticado"
 from app.main import orchestrate
 from app.router import choose_route
 from app.schemas import OrchestrateRequest
@@ -64,7 +65,7 @@ class TestRutaPrivadaValidada(unittest.TestCase):
             with patch("app.main.get_provider", return_value=proveedor), \
                     patch("app.main.get_classifier", return_value=None):
                 try:
-                    orchestrate(OrchestrateRequest(message="Esto es confidencial"))
+                    orchestrate(OrchestrateRequest(message="Esto es confidencial"), user=USUARIO_DE_DESARROLLO)
                     return proveedor, None
                 except HTTPException as exc:
                     return proveedor, exc

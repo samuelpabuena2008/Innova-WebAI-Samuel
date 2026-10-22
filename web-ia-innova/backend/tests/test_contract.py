@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from app.auth import USUARIO_DE_DESARROLLO, get_current_user
 from app.main import app
 from app.providers import ProviderError
 from app.schemas import MAX_MESSAGE_CHARS
@@ -29,7 +30,13 @@ class ClasificadorFalso:
 
 
 class TestOrchestrateContrato(unittest.TestCase):
+    """El contrato de /orchestrate se prueba con un usuario ya autenticado (la autenticación en sí se
+    prueba en test_auth.py y test_auth_endpoints.py). Se sustituye la dependencia de FastAPI, igual que
+    se inyecta un Classifier falso."""
+
     def setUp(self):
+        app.dependency_overrides[get_current_user] = lambda: USUARIO_DE_DESARROLLO
+        self.addCleanup(app.dependency_overrides.clear)
         self.client = TestClient(app)
 
     def _post(self, mensaje, clasificador=None):
