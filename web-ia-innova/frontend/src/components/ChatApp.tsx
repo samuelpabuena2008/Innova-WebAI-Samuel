@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useAuth } from "@/hooks/useAuth";
 import { useChat } from "@/hooks/useChat";
 import ChatInput from "./ChatInput";
 import ChatMessage from "./ChatMessage";
@@ -11,6 +12,7 @@ import WelcomeScreen from "./WelcomeScreen";
 export default function ChatApp() {
   const { conversations, activeConversation, isLoading, isOnline, send, newConversation, selectConversation } =
     useChat();
+  const { status, user, signOut } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
@@ -50,6 +52,8 @@ export default function ChatApp() {
         onClose={closeSidebar}
         onNew={newConversation}
         onSelect={selectConversation}
+        account={status === "signed_in" && user ? { email: user.email, role: user.role } : undefined}
+        onSignOut={signOut}
       />
 
       <main className="main">

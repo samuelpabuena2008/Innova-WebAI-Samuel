@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import type { AppRole } from "@/hooks/useAuth";
 import type { Conversation } from "@/types/chat";
 
 // Misma frontera que el @media (max-width: 800px) de globals.css.
@@ -23,6 +24,9 @@ interface SidebarProps {
   onClose: () => void;
   onNew: () => void;
   onSelect: (id: string) => void;
+  // MVP-1: datos de la sesión. Si no hay sesión (modo demo sin login) no se pasan y "Cuenta" sigue desactivado.
+  account?: { email: string | null; role: AppRole };
+  onSignOut?: () => void;
 }
 
 export default function Sidebar({
@@ -32,6 +36,8 @@ export default function Sidebar({
   onClose,
   onNew,
   onSelect,
+  account,
+  onSignOut,
 }: SidebarProps) {
   const isMobile = useSyncExternalStore(subscribeMobile, getMobileSnapshot, getMobileServerSnapshot);
   // F-01: en móvil, cerrada = `inert` (ni foco, ni clics, ni lector de pantalla).
@@ -82,9 +88,22 @@ export default function Sidebar({
           <button type="button" className="sidebar__link" disabled title="Próximamente">
             Configuración
           </button>
-          <button type="button" className="sidebar__link" disabled title="Próximamente">
-            Cuenta
-          </button>
+          {account ? (
+            <div className="sidebar__account">
+              <p className="sidebar__email" title={account.email ?? undefined}>
+                {account.email ?? "Sesión iniciada"}
+              </p>
+              {/* El rol es informativo (sale de la sesión); los permisos reales los aplica el backend. */}
+              <span className="badge">{account.role === "admin" ? "Administrador" : "Usuario"}</span>
+              <button type="button" className="sidebar__link" onClick={onSignOut}>
+                Cerrar sesión
+              </button>
+            </div>
+          ) : (
+            <button type="button" className="sidebar__link" disabled title="Próximamente">
+              Cuenta
+            </button>
+          )}
         </div>
       </aside>
     </>
