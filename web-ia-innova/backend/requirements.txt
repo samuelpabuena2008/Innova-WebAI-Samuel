@@ -6,3 +6,7 @@ httpx==0.28.1
 # python-dotenv lo usa uvicorn para `--env-file .env` (ya viene con uvicorn[standard]); el código no lo importa.
 # Se deja fijado para que la versión sea reproducible.
 python-dotenv==1.2.4
+# Autenticación (MVP-1): PyJWT valida los tokens de Supabase; `cryptography` aporta las firmas
+# asimétricas ES256/RS256 con las que Supabase firma hoy (sin ella PyJWT solo entiende HS256).
+PyJWT==2.15.1
+cryptography==50.0.2
