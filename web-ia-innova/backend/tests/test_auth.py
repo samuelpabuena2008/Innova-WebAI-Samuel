@@ -3,11 +3,15 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import time
 import unittest
+from unittest.mock import patch
 
 import jwt
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
 
 from app.auth import (
     JWKS_MAX_BYTES,
@@ -21,11 +25,17 @@ from app.auth import (
     AuthUser,
     JwksCache,
     JwtVerifier,
+    _issuer_desde_entorno,
+    auth_mode,
+    get_current_user,
+    get_verifier,
+    require_admin,
     role_from_claims,
 )
 from tests.auth_helpers import (
     ISSUER,
     JWKS_URL,
+    PROYECTO,
     SECRETO_HS256,
     RelojFalso,
     SupabaseFalso,
@@ -283,6 +293,172 @@ class TestJwtVerifier(unittest.TestCase):
         self.servidor.caido = True
         with self.assertRaises(AuthUnavailable):
             self.verificador.verify(firmar(self.clave))
+
+
+# ---------------------------------------------------------------------------------------------
+# Configuración y dependencias de FastAPI
+# ---------------------------------------------------------------------------------------------
+def _app_de_prueba() -> FastAPI:
+    """Mini-app con una ruta para cualquier usuario y otra solo para admin (MVP-8 aún no la tiene)."""
+    app = FastAPI()
+
+    @app.get("/quien")
+    def quien(usuario: AuthUser = Depends(get_current_user)):
+        return {"id": usuario.id, "role": usuario.role}
+
+    @app.get("/solo-admin")
+    def solo_admin(_admin: AuthUser = Depends(require_admin)):
+        return {"ok": True}
+
+    return app
+
+
+class TestAuthMode(unittest.TestCase):
+    def test_por_defecto_es_required(self):
+        with patch.dict(os.environ):
+            os.environ.pop("AUTH_MODE", None)
+            self.assertEqual(auth_mode(), "required")
+
+    def test_solo_disabled_exacto_la_apaga(self):
+        for valor, esperado in (("disabled", "disabled"), ("DISABLED", "disabled"), ("Disabled", "disabled"),
+                                (" disabled", "required"), ("disabled ", "required"), ("off", "required"),
+                                ("false", "required"), ("0", "required"), ("", "required"),
+                                ("required", "required"), ("desactivado", "required")):
+            with self.subTest(valor=valor), patch.dict(os.environ, {"AUTH_MODE": valor}):
+                self.assertEqual(auth_mode(), esperado)
+
+
+class TestSupabaseUrl(unittest.TestCase):
+    def _issuer(self, url):
+        with patch.dict(os.environ, {"SUPABASE_URL": url}):
+            return _issuer_desde_entorno()
+
+    def test_urls_validas(self):
+        self.assertEqual(self._issuer("https://abc.supabase.co"), "https://abc.supabase.co/auth/v1")
+        self.assertEqual(self._issuer("  https://abc.supabase.co/  "), "https://abc.supabase.co/auth/v1")
+        self.assertEqual(self._issuer("http://127.0.0.1:54321"), "http://127.0.0.1:54321/auth/v1")
+        self.assertEqual(self._issuer("http://localhost:54321"), "http://localhost:54321/auth/v1")
+
+    def test_urls_rechazadas(self):
+        for url in ("", "   ", "abc.supabase.co", "http://abc.supabase.co", "ftp://abc.supabase.co",
+                    "http://localhost.evil.com", "https://user:pw@abc.supabase.co", "https://abc.supabase.co/auth/v1",
+                    "https://abc.supabase.co/x", "https://abc.supabase.co?a=1", "https://abc.supabase.co#x",
+                    "https://", "http://[::1", "https://abc.supabase.co:99999", "http://localhost:0"):
+            with self.subTest(url=url):
+                self.assertIsNone(self._issuer(url))
+
+
+class TestGetVerifier(unittest.TestCase):
+    def setUp(self):
+        get_verifier.cache_clear()
+        self.addCleanup(get_verifier.cache_clear)
+
+    def test_sin_supabase_url_no_hay_verificador(self):
+        with patch.dict(os.environ):
+            os.environ.pop("SUPABASE_URL", None)
+            self.assertIsNone(get_verifier())
+
+    def test_con_url_y_secreto_verifica_hs256_sin_tocar_la_red(self):
+        entorno = {"SUPABASE_URL": PROYECTO, "SUPABASE_JWT_SECRET": f"  {SECRETO_HS256}  "}
+        with patch.dict(os.environ, entorno):
+            verificador = get_verifier()
+        token = jwt.encode(claims_validos(), SECRETO_HS256, algorithm="HS256")
+        self.assertEqual(verificador.verify(token).email, "ana@example.com")
+
+    def test_el_verificador_se_crea_una_sola_vez(self):
+        with patch.dict(os.environ, {"SUPABASE_URL": PROYECTO}):
+            self.assertIs(get_verifier(), get_verifier())
+
+
+class TestDependencias(unittest.TestCase):
+    """get_current_user y require_admin sobre una mini-app, con claves y Supabase simulados."""
+
+    def setUp(self):
+        self.clave = nueva_clave_ec()
+        self.servidor = SupabaseFalso(k1=self.clave)
+        verificador = JwtVerifier(ISSUER, JwksCache(JWKS_URL, client=self.servidor.cliente, clock=RelojFalso()))
+        patcher = patch("app.auth.get_verifier", return_value=verificador)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        entorno = patch.dict(os.environ, {"AUTH_MODE": "required", "PROVIDER_MODE": "mock"})
+        entorno.start()
+        self.addCleanup(entorno.stop)
+        self.client = TestClient(_app_de_prueba())
+
+    def _get(self, ruta, token=None, **cabeceras):
+        if token is not None:
+            cabeceras["Authorization"] = f"Bearer {token}"
+        return self.client.get(ruta, headers=cabeceras)
+
+    def test_sin_cabecera_401_con_www_authenticate(self):
+        r = self._get("/quien")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.json(), {"detail": "No autenticado"})
+        self.assertEqual(r.headers["www-authenticate"], "Bearer")
+
+    def test_esquema_distinto_de_bearer_o_token_vacio(self):
+        for cabecera in ("Basic YW5hOnB3", "Token abc", "Bearer", "Bearer ", "abc"):
+            with self.subTest(cabecera=cabecera):
+                self.assertEqual(self.client.get("/quien", headers={"Authorization": cabecera}).status_code, 401)
+
+    def test_todos_los_rechazos_dicen_lo_mismo(self):
+        # Un atacante no debe poder distinguir "expirado" de "firma mala" de "audiencia equivocada".
+        rechazados = [
+            firmar(self.clave, exp=int(time.time()) - 3600),
+            firmar(nueva_clave_ec()),
+            firmar(self.clave, aud="anon"),
+            firmar(self.clave, kid="otro"),
+            "basura",
+        ]
+        cuerpos = {self._get("/quien", t).text for t in rechazados}
+        self.assertEqual(cuerpos, {'{"detail":"No autenticado"}'})
+
+    def test_token_valido(self):
+        r = self._get("/quien", firmar(self.clave))
+        self.assertEqual((r.status_code, r.json()), (200, {"id": "11111111-2222-3333-4444-555555555555", "role": "usuario"}))
+
+    def test_esquema_bearer_en_cualquier_capitalizacion(self):
+        r = self.client.get("/quien", headers={"Authorization": f"bearer {firmar(self.clave)}"})
+        self.assertEqual(r.status_code, 200)
+
+    def test_ruta_de_admin(self):
+        self.assertEqual(self._get("/solo-admin").status_code, 401)                      # sin sesión: 401, no 403
+        self.assertEqual(self._get("/solo-admin", firmar(self.clave)).status_code, 403)  # usuario normal
+        admin = firmar(self.clave, app_metadata={"role": "admin"})
+        self.assertEqual(self._get("/solo-admin", admin).status_code, 200)
+
+    def test_ser_admin_por_user_metadata_no_abre_la_ruta_de_admin(self):
+        falso_admin = firmar(self.clave, user_metadata={"role": "admin"})
+        self.assertEqual(self._get("/solo-admin", falso_admin).status_code, 403)
+
+    def test_supabase_caido_es_503_generico(self):
+        self.servidor.caido = True
+        r = self._get("/quien", firmar(self.clave))
+        self.assertEqual((r.status_code, r.json()), (503, {"detail": "Autenticación no disponible."}))
+
+    def test_exigida_pero_sin_configurar_es_503_incluso_con_token(self):
+        with patch("app.auth.get_verifier", return_value=None):
+            self.assertEqual(self._get("/quien", firmar(self.clave)).status_code, 503)
+            self.assertEqual(self._get("/quien").status_code, 503)
+
+    def test_errata_en_auth_mode_no_apaga_la_proteccion(self):
+        with patch.dict(os.environ, {"AUTH_MODE": "off"}):
+            self.assertEqual(self._get("/quien").status_code, 401)
+
+    def test_modo_disabled_con_mock_deja_pasar_al_usuario_de_desarrollo(self):
+        with patch.dict(os.environ, {"AUTH_MODE": "disabled", "PROVIDER_MODE": "mock"}):
+            r = self._get("/quien")
+        self.assertEqual((r.status_code, r.json()["id"], r.json()["role"]), (200, "dev-local", "usuario"))
+
+    def test_el_usuario_de_desarrollo_no_es_admin(self):
+        with patch.dict(os.environ, {"AUTH_MODE": "disabled", "PROVIDER_MODE": "mock"}):
+            self.assertEqual(self._get("/solo-admin").status_code, 403)
+
+    def test_modo_disabled_no_se_permite_con_proveedores_reales(self):
+        with patch.dict(os.environ, {"AUTH_MODE": "disabled", "PROVIDER_MODE": "real"}):
+            r = self._get("/quien")
+            self.assertEqual(r.status_code, 503)
+            self.assertEqual(self._get("/quien", firmar(self.clave)).status_code, 503)  # ni siquiera con token
 
 
 if __name__ == "__main__":
