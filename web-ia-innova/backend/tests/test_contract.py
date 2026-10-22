@@ -162,6 +162,11 @@ class TestContratoConElFrontend(unittest.TestCase):
         self.assertIn('"/orchestrate"', self.ts)
         self.assertIn("JSON.stringify({ message: req.message })", self.ts)
 
+    def test_el_frontend_envia_el_jwt_como_bearer(self):
+        # MVP-1: el backend exige `Authorization: Bearer <jwt>`; si el frontend dejara de mandarla, el chat
+        # real daría 401 siempre y esta prueba lo avisa antes de desplegar.
+        self.assertIn("Authorization: `Bearer ${token}`", self.ts)
+
     def test_el_limite_de_mensaje_coincide(self):
         encontrado = re.search(r"MAX_MESSAGE_CHARS\s*=\s*([\d_]+)", self.ts)
         self.assertIsNotNone(encontrado)

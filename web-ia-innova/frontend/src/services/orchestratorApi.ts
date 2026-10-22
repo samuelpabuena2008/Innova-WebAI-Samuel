@@ -1,3 +1,4 @@
+import { AUTH_CONFIGURED, getAccessToken, signOutLocal } from "@/lib/supabase";
 import type { OrchestratorRequest, OrchestratorResult, ResponseMeta } from "@/types/chat";
 
 /*
@@ -6,6 +7,8 @@ import type { OrchestratorRequest, OrchestratorResult, ResponseMeta } from "@/ty
  *
  * CONTRATO CONFIRMADO por el backend (backend/app/schemas.py):
  *  - POST {API_URL}/orchestrate con cuerpo { message }.
+ *  - MVP-1: la cabecera `Authorization: Bearer <JWT de Supabase>` es OBLIGATORIA; sin ella (o con un token
+ *    vencido) el backend responde 401. Ver más abajo cómo se trata.
  *  - `conversationId` NO se envía por ahora (el backend aún no lo usa).
  *  - La respuesta trae content y metadatos opcionales (model, category, reason,
  *    latency_ms, is_mock, decided_by).
@@ -28,9 +31,17 @@ export const MAX_MESSAGE_CHARS = 32_000;
 
 export class OrchestratorError extends Error {}
 
+// 401: el backend no reconoció la sesión. Es una subclase para que useChat siga mostrando el mensaje igual
+// (captura OrchestratorError), pero se puede distinguir si hiciera falta.
+export class AuthRequiredError extends OrchestratorError {}
+
 export async function sendMessage(req: OrchestratorRequest): Promise<OrchestratorResult> {
   // Sin URL configurada -> datos de prueba, claramente marcados.
   if (!API_URL) return mockResponse(req);
+
+  // MVP-1: JWT de la sesión (Supabase lo renueva solo si ya caducó). null = no hay sesión o login sin configurar.
+  // Se pide ANTES de armar el temporizador para que renovar el token no cuente contra el tiempo de espera.
+  const token = await getAccessToken();
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -38,11 +49,30 @@ export async function sendMessage(req: OrchestratorRequest): Promise<Orchestrato
   try {
     const res = await fetch(`${API_URL}${ENDPOINT_PATH}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ message: req.message }), // campos confirmados; sin conversationId
       signal: controller.signal,
     });
 
+    // MVP-1: 401 = el backend no aceptó la sesión (token vencido, usuario dado de baja o sin login).
+    // Se cierra la sesión local: AuthGate vuelve a mostrar el login para entrar de nuevo.
+    if (res.status === 401) {
+      if (AUTH_CONFIGURED) {
+        await signOutLocal();
+        throw new AuthRequiredError("Tu sesión expiró o ya no es válida. Inicia sesión de nuevo.");
+      }
+      // Login sin configurar en este despliegue pero el backend lo exige: es un error de configuración.
+      throw new AuthRequiredError(
+        "El servidor exige iniciar sesión, pero este despliegue no tiene configurado el login " +
+          "(faltan NEXT_PUBLIC_SUPABASE_URL y la clave pública).",
+      );
+    }
+    if (res.status === 403) {
+      throw new OrchestratorError("No tienes permiso para hacer esto.");
+    }
     // F-05: mensaje distinto según el estado HTTP.
     if (res.status === 429) {
       throw new OrchestratorError("Demasiadas solicitudes, espera un momento e inténtalo de nuevo.");
