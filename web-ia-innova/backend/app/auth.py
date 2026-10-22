@@ -237,9 +237,12 @@ class JwtVerifier:
                 # audiencia/emisor se rechaza.
                 options={"require": ["exp", "sub", "aud", "iss"]},
             )
-        except jwt.PyJWTError as exc:
+        except (jwt.PyJWTError, TypeError, ValueError) as exc:
             # El nombre de la excepción (ExpiredSignatureError, InvalidSignatureError, InvalidAudienceError...)
             # sirve de motivo en los logs y no contiene el token.
+            # TypeError/ValueError: PyJWT los lanza (sin envolverlos) si la clave no encaja con el `alg` de la
+            # cabecera, p. ej. un token que dice RS256 pero el `kid` apunta a una clave EC. Un token manipulado
+            # debe dar 401, nunca un 500.
             raise AuthError(type(exc).__name__) from None
 
         sub = claims.get("sub")
