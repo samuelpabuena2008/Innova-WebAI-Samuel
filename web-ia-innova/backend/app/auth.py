@@ -184,3 +184,71 @@ class JwksCache:
             except (jwt.PyJWTError, ValueError, KeyError, TypeError):  # clave mal formada: se descarta
                 continue
         return claves
+
+
+class JwtVerifier:
+    """Comprueba un access token de Supabase y devuelve el AuthUser, o lanza AuthError / AuthUnavailable.
+
+    Acepta dos tipos de firma, y la elección la hace ESTE código, no el token:
+    - ES256 / RS256 (claves asimétricas): se verifica con la clave pública del JWKS que corresponde al `kid`.
+    - HS256 (secreto compartido "legado"): solo si hay secreto configurado. Supabase sigue aceptando tokens
+      firmados con el secreto viejo hasta que caducan al rotar claves, y los proyectos antiguos solo usan este.
+    Cualquier otro algoritmo (`none`, HS384, ES512...) se rechaza. Y la clave pública NUNCA se usa como secreto
+    HMAC, ni al revés: cada rama verifica con su propia clave y con su propia lista de algoritmos.
+    """
+
+    def __init__(self, issuer: str, jwks: Optional[JwksCache] = None, hs_secret: Optional[str] = None):
+        self._issuer = issuer
+        self._jwks = jwks
+        self._hs_secret = hs_secret or None
+
+    def _clave_para(self, alg: object, kid: object):
+        """(clave, algoritmos permitidos) para verificar un token con esa cabecera."""
+        if alg == "HS256":
+            if not self._hs_secret:
+                raise AuthError("hs256_no_configurado")
+            return self._hs_secret, ["HS256"]
+        if alg in ASYMMETRIC_ALGS:
+            if self._jwks is None:
+                raise AuthError("jwks_no_configurado")
+            if not isinstance(kid, str) or not kid:
+                raise AuthError("token_sin_kid")
+            return self._jwks.key_for(kid), [alg]
+        raise AuthError("algoritmo_no_permitido")
+
+    def verify(self, token: str) -> AuthUser:
+        if not token or len(token) > MAX_TOKEN_CHARS:
+            raise AuthError("token_invalido")
+        try:
+            cabecera = jwt.get_unverified_header(token)  # solo para saber `alg` y `kid`; aún NO se confía en nada
+        except jwt.PyJWTError:
+            raise AuthError("token_malformado") from None
+
+        clave, algoritmos = self._clave_para(cabecera.get("alg"), cabecera.get("kid"))
+        try:
+            claims = jwt.decode(
+                token,
+                clave,
+                algorithms=algoritmos,
+                audience=AUDIENCE,
+                issuer=self._issuer,
+                leeway=LEEWAY_S,
+                # PyJWT solo exige exp si viene; aquí un token sin caducidad, sin dueño o sin
+                # audiencia/emisor se rechaza.
+                options={"require": ["exp", "sub", "aud", "iss"]},
+            )
+        except jwt.PyJWTError as exc:
+            # El nombre de la excepción (ExpiredSignatureError, InvalidSignatureError, InvalidAudienceError...)
+            # sirve de motivo en los logs y no contiene el token.
+            raise AuthError(type(exc).__name__) from None
+
+        sub = claims.get("sub")
+        if not isinstance(sub, str) or not sub:
+            raise AuthError("sin_sub")
+        # Supabase permite "inicios de sesión anónimos": generan un token válido para cualquiera, sin
+        # correo. El acceso a esta app es cerrado (miembros de prueba), así que se rechazan.
+        if claims.get("is_anonymous") is True:
+            raise AuthError("usuario_anonimo")
+
+        email = claims.get("email")
+        return AuthUser(id=sub, email=email if isinstance(email, str) else None, role=role_from_claims(claims))
