@@ -143,6 +143,38 @@ button:disabled { cursor: not-allowed; }
 /* Se mantiene visible también en móvil (a diferencia del hint de teclado). */
 .composer__privacy { margin: 4px 4px 0; font-size: 0.8rem; line-height: 1.4; color: var(--text-muted); }
 
+/* ---------- Acceso (login) ---------- */
+.auth-loading { min-height: 100dvh; display: grid; place-items: center; color: var(--text-muted); }
+.login { min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; background: var(--surface); }
+.login__card {
+  width: 100%; max-width: 400px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 16px; padding: 32px 28px; display: flex; flex-direction: column; gap: 16px;
+}
+.login__logo { display: block; }
+.login__card h1 { margin: 0; font-size: 1.6rem; font-weight: 600; letter-spacing: -0.01em; }
+.login__intro { margin: 0; font-size: 0.9rem; color: var(--text-muted); }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 0.9rem; font-weight: 500; }
+.field input {
+  font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 12px; min-height: 44px;
+}
+.field input:focus-visible { outline-offset: 0; border-color: var(--accent); }
+.field input[aria-invalid="true"] { border-color: var(--danger); }
+.login__error { margin: 0; background: var(--danger-soft); color: var(--danger); border-radius: 8px; padding: 10px 12px; font-size: 0.95rem; }
+.login__submit {
+  background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 10px 16px;
+  font-weight: 500; min-height: 44px;
+}
+.login__submit:hover:not(:disabled) { background: var(--accent-hover); }
+.login__submit:disabled { background: #cfc9df; }
+
+/* ---------- Cuenta (barra lateral) ---------- */
+.sidebar__account { display: flex; flex-direction: column; gap: 6px; padding: 4px 12px 8px; }
+.sidebar__email { margin: 0; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar__account .badge { align-self: flex-start; font-size: 0.8rem; }
+.sidebar__link:not(:disabled):hover { background: var(--accent-soft); color: var(--text); }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 800px) {
   .sidebar {
