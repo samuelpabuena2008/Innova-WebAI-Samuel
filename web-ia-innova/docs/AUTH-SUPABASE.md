@@ -94,7 +94,8 @@ Los logs del backend registran `user=<uuid>` y el **motivo** de cada rechazo (`E
 |--------------------|---------------|
 | `InvalidIssuerError` | `SUPABASE_URL` no coincide con el `iss` del token (otro proyecto, o un dominio personalizado). Compara la URL con el `iss` de un token. |
 | `ExpiredSignatureError` | El token caducó y el navegador no pudo renovarlo. Volver a iniciar sesión. |
-| `InvalidAudienceError` | No es un token de un usuario con sesión (p. ej. se mandó la clave anónima). |
+| `InvalidAudienceError` | Su `aud` no es `authenticated`: no es el token de un usuario con sesión iniciada. |
+| `MissingRequiredClaimError` | Al token le falta `exp`, `sub`, `aud` o `iss`: tampoco es un token de sesión de usuario. |
 | `InvalidSignatureError` / `kid_desconocido` | Token de otro proyecto o clave rotada hace menos de un minuto (el backend vuelve a mirar las claves como máximo una vez por minuto). |
 | `hs256_no_configurado` | El proyecto firma con el secreto legado y falta `SUPABASE_JWT_SECRET`. |
 | `usuario_anonimo` | Se inició sesión de forma anónima: no se permite. |
