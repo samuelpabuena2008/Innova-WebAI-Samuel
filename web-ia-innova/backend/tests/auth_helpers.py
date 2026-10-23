@@ -55,6 +55,8 @@ class SupabaseFalso:
         self.descargas = 0
         self.caido = False
         self.cuerpo_crudo = None  # si se define, se devuelve tal cual (para probar respuestas raras)
+        self.estado_con_claves = 200  # estado HTTP con el que se sirven las claves (para probar un 500 con cuerpo válido)
+        self.excepcion = None  # si se define, el "transporte" la lanza (simula un fallo de red)
         self.cliente = httpx.Client(transport=httpx.MockTransport(self._responder))
 
     def publicar(self, kid: str, clave) -> None:
@@ -62,11 +64,13 @@ class SupabaseFalso:
 
     def _responder(self, request: httpx.Request) -> httpx.Response:
         self.descargas += 1
+        if self.excepcion is not None:
+            raise self.excepcion
         if self.caido:
             return httpx.Response(503, json={"error": "caido"})
         if self.cuerpo_crudo is not None:
             return httpx.Response(200, content=self.cuerpo_crudo)
-        return httpx.Response(200, json={"keys": list(self.claves.values())})
+        return httpx.Response(self.estado_con_claves, json={"keys": list(self.claves.values())})
 
 
 class RelojFalso:

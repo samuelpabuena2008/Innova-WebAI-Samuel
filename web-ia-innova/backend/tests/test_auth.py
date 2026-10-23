@@ -8,6 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+import httpx
 import jwt
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from fastapi import Depends, FastAPI
@@ -142,6 +143,27 @@ class TestJwksCache(unittest.TestCase):
                 cache = JwksCache(JWKS_URL, client=servidor.cliente, clock=RelojFalso())
                 with self.assertRaises(AuthUnavailable):  # nunca hubo claves válidas: problema nuestro, no del usuario
                     cache.key_for("k1")
+
+    def test_un_estado_de_error_no_se_acepta_aunque_el_cuerpo_traiga_claves_validas(self):
+        # Un 500 (o un 404 de un proxy) con un cuerpo parecido a un JWKS no debe tomarse por las claves de Supabase.
+        for estado in (201, 301, 404, 500):
+            with self.subTest(estado=estado):
+                servidor = SupabaseFalso(k1=self.k1)
+                servidor.estado_con_claves = estado
+                cache = JwksCache(JWKS_URL, client=servidor.cliente, clock=RelojFalso())
+                with self.assertRaises(AuthUnavailable):
+                    cache.key_for("k1")
+
+    def test_el_log_de_un_fallo_de_red_no_filtra_la_url_ni_el_texto_del_error(self):
+        servidor = SupabaseFalso(k1=self.k1)
+        servidor.excepcion = httpx.ConnectError("no conecta con https://secreto.example/auth/v1?apikey=ABC123")
+        cache = JwksCache(JWKS_URL, client=servidor.cliente, clock=RelojFalso())
+        with self.assertLogs("auth", level="WARNING") as registro, self.assertRaises(AuthUnavailable):
+            cache.key_for("k1")
+        texto = "\n".join(registro.output)
+        self.assertIn("ConnectError", texto)           # el TIPO sí se registra: sirve para diagnosticar
+        self.assertNotIn("secreto.example", texto)      # la URL y el texto del error, no
+        self.assertNotIn("ABC123", texto)
 
     def test_ignora_claves_simetricas_y_malformadas(self):
         self.servidor.claves["oct"] = {"kty": "oct", "kid": "oct", "k": "c2VjcmV0bw"}
@@ -283,6 +305,13 @@ class TestJwtVerifier(unittest.TestCase):
         for basura in ("", "abc", "a.b.c", "....", "x" * (MAX_TOKEN_CHARS + 1), "Bearer abc", "\x00\x01"):
             with self.subTest(token=basura[:15]):
                 self._rechaza(basura)
+
+    def test_un_token_valido_pero_sobredimensionado_se_rechaza(self):
+        # La basura gigante ya fallaría por mal formada; esto prueba el tope con un token BIEN firmado.
+        grande = firmar(self.clave, relleno="x" * MAX_TOKEN_CHARS)
+        self.assertGreater(len(grande), MAX_TOKEN_CHARS)
+        self._rechaza(grande, "token_invalido")
+        self.assertEqual(self.verificador.verify(firmar(self.clave)).role, ROLE_USER)  # el normal sigue pasando
 
     def test_firma_alterada(self):
         token = firmar(self.clave)
