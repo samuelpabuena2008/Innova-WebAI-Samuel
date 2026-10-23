@@ -88,6 +88,21 @@ curl $BACKEND/me -H "Authorization: Bearer $TOKEN"
 
 Los logs del backend registran `user=<uuid>` y el **motivo** de cada rechazo (`ExpiredSignatureError`, `InvalidSignatureError`...), nunca el token. Al cliente solo se le dice "No autenticado".
 
+### Si recibes 401 o 503: mira el motivo en los logs
+
+| Motivo en los logs | Qué suele ser |
+|--------------------|---------------|
+| `InvalidIssuerError` | `SUPABASE_URL` no coincide con el `iss` del token (otro proyecto, o un dominio personalizado). Compara la URL con el `iss` de un token. |
+| `ExpiredSignatureError` | El token caducó y el navegador no pudo renovarlo. Volver a iniciar sesión. |
+| `InvalidAudienceError` | No es un token de un usuario con sesión (p. ej. se mandó la clave anónima). |
+| `InvalidSignatureError` / `kid_desconocido` | Token de otro proyecto o clave rotada hace menos de un minuto (el backend vuelve a mirar las claves como máximo una vez por minuto). |
+| `hs256_no_configurado` | El proyecto firma con el secreto legado y falta `SUPABASE_JWT_SECRET`. |
+| `usuario_anonimo` | Se inició sesión de forma anónima: no se permite. |
+| `jwks_no_disponible` (503) | El backend no pudo descargar las claves de Supabase (¿`SUPABASE_URL` mal escrita o sin red?). |
+| `SUPABASE_URL falta o no es válida` (503) | Falta la variable o no es `https://<proyecto>.supabase.co`. |
+
+Cada motivo sale en el log del backend como `auth rechazada motivo=...` (401) o `auth no disponible motivo=...` (503); la tabla es lo que cada código significa en el código, no se contrastó con un proyecto real.
+
 ## Desarrollo local sin Supabase
 
 - **Frontend sin `NEXT_PUBLIC_SUPABASE_URL`:** no pide login (modo demo), como antes.
