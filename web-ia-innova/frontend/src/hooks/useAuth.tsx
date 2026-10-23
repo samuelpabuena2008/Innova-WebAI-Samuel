@@ -52,6 +52,13 @@ function messageFor(error: unknown): string {
     return "No se pudo conectar con el servicio de cuentas. Revisa tu conexión e inténtalo de nuevo.";
   }
   if (isAuthApiError(error)) {
+    // Códigos propios de Supabase (existen en auth-js). Se muestran para que el usuario no crea que escribió mal
+    // la contraseña. OJO: no se verificó si Supabase los devuelve ANTES o DESPUÉS de comprobar la contraseña;
+    // si fuera antes, permitirían saber que un correo existe. Revisarlo con un proyecto real.
+    if (error.code === "email_not_confirmed") {
+      return "Tu correo aún no está confirmado. Pídele a un administrador que confirme tu cuenta.";
+    }
+    if (error.code === "user_banned") return "Tu cuenta está desactivada. Contacta a un administrador.";
     if (error.status === 429) return "Demasiados intentos. Espera un momento e inténtalo de nuevo.";
     if (error.status >= 500) return "El servicio de cuentas tuvo un problema. Inténtalo de nuevo en unos instantes.";
     if (error.status === 400 || error.status === 401 || error.status === 422) {
