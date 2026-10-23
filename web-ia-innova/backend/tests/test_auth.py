@@ -2,8 +2,10 @@
 import base64
 import hashlib
 import hmac
+import itertools
 import json
 import os
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -182,6 +184,69 @@ def _b64(datos: dict) -> str:
 def token_a_mano(cabecera: dict, claims: dict, firma: bytes = b"firma") -> str:
     """Token con cabecera y claims a medida (para casos que PyJWT se niega a firmar)."""
     return f"{_b64(cabecera)}.{_b64(claims)}." + base64.urlsafe_b64encode(firma).rstrip(b"=").decode()
+
+
+class TestJwksCacheConcurrencia(unittest.TestCase):
+    """Varios hilos a la vez (FastAPI ejecuta cada petición en un hilo del pool). Con reloj real y una descarga
+    lenta, sin el candado todos verían la caché vacía a la vez y cada uno descargaría el JWKS."""
+
+    HILOS = 32
+
+    def _en_paralelo(self, tarea):
+        barrera = threading.Barrier(self.HILOS)
+        resultados, errores = [], []
+
+        def envoltorio():
+            barrera.wait()  # todos arrancan en el mismo instante
+            try:
+                resultados.append(tarea())
+            except BaseException as exc:  # noqa: BLE001
+                errores.append(exc)
+
+        hilos = [threading.Thread(target=envoltorio) for _ in range(self.HILOS)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=20)
+        return resultados, errores
+
+    def test_cache_fria_y_mismo_kid_provoca_una_sola_descarga(self):
+        servidor = SupabaseFalso(k1=nueva_clave_ec())
+        servidor.latencia = 0.1
+        cache = JwksCache(JWKS_URL, client=servidor.cliente)
+        resultados, errores = self._en_paralelo(lambda: cache.key_for("k1") is not None)
+        self.assertEqual(errores, [])
+        self.assertEqual(sum(resultados), self.HILOS)
+        self.assertEqual(servidor.descargas, 1)
+
+    def test_cache_fria_y_kids_inventados_provoca_una_sola_descarga(self):
+        servidor = SupabaseFalso(k1=nueva_clave_ec())
+        servidor.latencia = 0.1
+        cache = JwksCache(JWKS_URL, client=servidor.cliente)
+        contador = itertools.count()
+        resultados, errores = self._en_paralelo(lambda: cache.key_for(f"inventado-{next(contador)}"))
+        self.assertEqual(resultados, [])
+        self.assertEqual({type(e) for e in errores}, {AuthError})
+        self.assertEqual(len(errores), self.HILOS)
+        self.assertEqual(servidor.descargas, 1)
+
+    def test_verificador_en_paralelo_no_mezcla_identidades(self):
+        clave = nueva_clave_ec()
+        servidor = SupabaseFalso(k1=clave)
+        servidor.latencia = 0.1
+        verificador = JwtVerifier(ISSUER, JwksCache(JWKS_URL, client=servidor.cliente))
+        tokens = [firmar(clave, sub=f"usuario-{i}", app_metadata={"role": "admin"} if i % 2 else {})
+                  for i in range(self.HILOS)]
+        indice = itertools.count()
+
+        def verificar():
+            i = next(indice)
+            usuario = verificador.verify(tokens[i])
+            return usuario.id == f"usuario-{i}" and usuario.is_admin == bool(i % 2)
+
+        resultados, errores = self._en_paralelo(verificar)
+        self.assertEqual(errores, [])
+        self.assertTrue(all(resultados) and len(resultados) == self.HILOS)
 
 
 class TestJwtVerifier(unittest.TestCase):

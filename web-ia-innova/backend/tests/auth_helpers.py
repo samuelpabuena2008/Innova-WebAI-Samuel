@@ -57,6 +57,7 @@ class SupabaseFalso:
         self.cuerpo_crudo = None  # si se define, se devuelve tal cual (para probar respuestas raras)
         self.estado_con_claves = 200  # estado HTTP con el que se sirven las claves (para probar un 500 con cuerpo válido)
         self.excepcion = None  # si se define, el "transporte" la lanza (simula un fallo de red)
+        self.latencia = 0.0  # segundos que tarda cada descarga (para forzar que varios hilos coincidan)
         self.cliente = httpx.Client(transport=httpx.MockTransport(self._responder))
 
     def publicar(self, kid: str, clave) -> None:
@@ -64,6 +65,8 @@ class SupabaseFalso:
 
     def _responder(self, request: httpx.Request) -> httpx.Response:
         self.descargas += 1
+        if self.latencia:
+            time.sleep(self.latencia)
         if self.excepcion is not None:
             raise self.excepcion
         if self.caido:
