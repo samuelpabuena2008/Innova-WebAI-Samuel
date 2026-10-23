@@ -33,8 +33,23 @@ export function isSecretKey(key: string): boolean {
   }
 }
 
-function configuredKey(): string | null {
+/**
+ * Configuración válida del login, o null si falta o es incorrecta. Se calcula UNA vez al cargar el módulo,
+ * así los avisos de error salen una sola vez y `AUTH_CONFIGURED` y `getSupabase()` no pueden discrepar.
+ *
+ * Una configuración incorrecta se trata como "sin configurar" (modo demo) en vez de dejar que supabase-js
+ * lance una excepción dentro de un efecto de React, que tumbaría toda la página en blanco. En ese caso el
+ * backend, que sí exige sesión, responderá 401 y el chat explicará que falta configurar el login.
+ */
+function resolveConfig(): { url: string; key: string } | null {
   if (!SUPABASE_URL || !PUBLIC_KEY) return null;
+  try {
+    const { protocol } = new URL(SUPABASE_URL);
+    if (protocol !== "https:" && protocol !== "http:") throw new Error("protocolo no permitido");
+  } catch {
+    console.error("NEXT_PUBLIC_SUPABASE_URL no es una URL válida (se espera https://<proyecto>.supabase.co).");
+    return null;
+  }
   if (isSecretKey(PUBLIC_KEY)) {
     // Mensaje fijo (sin imprimir la clave). Se trata como "sin configurar": la app no arranca con ella.
     console.error(
@@ -43,12 +58,14 @@ function configuredKey(): string | null {
     );
     return null;
   }
-  return PUBLIC_KEY;
+  return { url: SUPABASE_URL, key: PUBLIC_KEY };
 }
+
+const CONFIG = resolveConfig();
 
 // true si el login está configurado. La UI lo usa para decidir si exige iniciar sesión.
 // Analogía Java: un flag de configuración leído una sola vez al arrancar, como un @Value.
-export const AUTH_CONFIGURED = configuredKey() !== null;
+export const AUTH_CONFIGURED = CONFIG !== null;
 
 let client: SupabaseClient | null | undefined;
 
@@ -59,10 +76,9 @@ let client: SupabaseClient | null | undefined;
 export function getSupabase(): SupabaseClient | null {
   if (typeof window === "undefined") return null;
   if (client !== undefined) return client;
-  const key = configuredKey();
-  client =
-    SUPABASE_URL && key
-      ? createClient(SUPABASE_URL, key, {
+  try {
+    client = CONFIG
+      ? createClient(CONFIG.url, CONFIG.key, {
           auth: {
             persistSession: true, // la sesión sobrevive a recargar la página (localStorage)
             autoRefreshToken: true, // renueva el JWT antes de que caduque
@@ -70,6 +86,11 @@ export function getSupabase(): SupabaseClient | null {
           },
         })
       : null;
+  } catch {
+    // Red de seguridad por si supabase-js rechaza algo que la validación de arriba dejó pasar.
+    console.error("No se pudo crear el cliente de Supabase: revisa NEXT_PUBLIC_SUPABASE_*.");
+    client = null;
+  }
   return client;
 }
 
