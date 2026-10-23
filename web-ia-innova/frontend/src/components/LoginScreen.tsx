@@ -9,7 +9,7 @@ import { useAuth } from "@/hooks/useAuth";
  * Pendiente (otra fase): recuperación de contraseña.
  */
 export default function LoginScreen() {
-  const { signIn } = useAuth();
+  const { signIn, notice } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +39,13 @@ export default function LoginScreen() {
         <p className="login__intro">
           El acceso es solo para miembros autorizados de INNOVA. Si necesitas una cuenta, pídesela a un administrador.
         </p>
+
+        {/* Aviso si la sesión se perdió sin que el usuario la cerrara (token vencido, otra pestaña...). */}
+        {notice && (
+          <p className="login__notice" role="status">
+            {notice}
+          </p>
+        )}
 
         <div className="field">
           <label htmlFor="login-email">Correo electrónico</label>

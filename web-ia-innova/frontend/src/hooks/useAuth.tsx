@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isAuthApiError, isAuthRetryableFetchError, type Session } from "@supabase/supabase-js";
 import { AUTH_CONFIGURED, getSupabase, signOutLocal } from "@/lib/supabase";
 
@@ -28,12 +28,16 @@ export interface AuthUser {
 interface AuthContextValue {
   status: AuthStatus;
   user: AuthUser | null;
+  /** Aviso para la pantalla de login cuando la sesión se perdió sin que el usuario la cerrara. */
+  notice: string | null;
   /** Devuelve null si entró bien, o el mensaje de error para mostrar al usuario. */
   signIn: (email: string, password: string) => Promise<string | null>;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+const SESSION_ENDED_NOTICE = "Tu sesión terminó (venció o se cerró en otra pestaña). Inicia sesión de nuevo.";
 
 // El rol se lee igual que en el backend: SOLO de app_metadata.role === "admin" (esa parte solo se edita con la
 // clave de servicio). user_metadata lo puede editar el propio usuario, así que nunca se mira.
@@ -60,6 +64,11 @@ function messageFor(error: unknown): string {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>(AUTH_CONFIGURED ? "loading" : "disabled");
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // Para distinguir "cerró sesión el usuario" de "se perdió la sesión" (token vencido que no se pudo renovar,
+  // el backend respondió 401, cierre desde otra pestaña). Son refs porque no deben provocar renders.
+  const wasSignedIn = useRef(false);
+  const manualSignOut = useRef(false);
 
   useEffect(() => {
     const supabase = getSupabase();
@@ -69,8 +78,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // token y cuando otra pestaña cierra la sesión. Una sola función cubre todos los casos.
     // (Dentro del callback no se llama a otras funciones de supabase.auth: puede bloquearse.)
     const { data } = supabase.auth.onAuthStateChange((_evento, session) => {
-      setUser(session ? toAuthUser(session) : null);
-      setStatus(session ? "signed_in" : "signed_out");
+      if (session) {
+        wasSignedIn.current = true;
+        setNotice(null);
+        setUser(toAuthUser(session));
+        setStatus("signed_in");
+        return;
+      }
+      // Sin sesión. Si venía de estar dentro y no fue el propio usuario quien salió, se le explica en el login.
+      if (wasSignedIn.current && !manualSignOut.current) setNotice(SESSION_ENDED_NOTICE);
+      wasSignedIn.current = false;
+      manualSignOut.current = false;
+      setUser(null);
+      setStatus("signed_out");
     });
     return () => data.subscription.unsubscribe();
   }, []);
@@ -87,10 +107,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    manualSignOut.current = true; // salida voluntaria: en el login no hace falta ningún aviso
     await signOutLocal(); // onAuthStateChange pasa a signed_out y se muestra el login
   }, []);
 
-  const value = useMemo(() => ({ status, user, signIn, signOut }), [status, user, signIn, signOut]);
+  const value = useMemo(() => ({ status, user, notice, signIn, signOut }), [status, user, notice, signIn, signOut]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
