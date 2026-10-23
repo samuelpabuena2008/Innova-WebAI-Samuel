@@ -8,7 +8,8 @@ API en FastAPI que recibe un mensaje, decide a qué modelo iría y devuelve una 
 |-------|--------|
 | **Clasificación** (IA Gestora) | **Real** con Gemini Flash-Lite si hay clave y `GESTORA_MODE=hybrid`. Sin clave funciona igual con reglas. |
 | **Generación de la respuesta** | **Simulada** (`PROVIDER_MODE=mock`). Las llamadas a OpenAI / Anthropic / NVIDIA **no están implementadas** (`RealProvider`). |
-| Autenticación, límites por cliente, persistencia | No existen todavía. |
+| **Autenticación** | **Real** (MVP-1): `/orchestrate` y `/me` exigen un JWT de Supabase. Ver [`../docs/AUTH-SUPABASE.md`](../docs/AUTH-SUPABASE.md). |
+| Límites por cliente, persistencia | No existen todavía. |
 
 Los nombres de modelo vienen del informe y deben validarse.
 
@@ -31,7 +32,7 @@ La detección es por reglas: **no es perfecta**. No envíes datos sensibles.
 
 ## Contrato (el que usa el frontend)
 
-`POST /orchestrate`
+`POST /orchestrate` (requiere `Authorization: Bearer <JWT de Supabase>`)
 
 ```json
 { "message": "texto del usuario" }
@@ -55,7 +56,9 @@ Respuesta 200:
 }
 ```
 
-Errores: **422** entrada inválida · **502** `{ "detail": "..." }` si ningún proveedor responde · **503** si un mensaje privado llega con `PROVIDER_MODE=real` y no hay `PRIVATE_ROUTE_URL` (https) configurada. Lo privado **no tiene modelo de respaldo**: nunca se reenvía a otro proveedor.
+Errores: **401** `{ "detail": "No autenticado" }` sin token o con un token inválido, vencido o de otro proyecto (el motivo exacto solo va a los logs) · **503** `{ "detail": "Autenticación no disponible." }` si la autenticación no está configurada o Supabase no responde · **422** entrada inválida · **502** `{ "detail": "..." }` si ningún proveedor responde · **503** si un mensaje privado llega con `PROVIDER_MODE=real` y no hay `PRIVATE_ROUTE_URL` (https) configurada. Lo privado **no tiene modelo de respaldo**: nunca se reenvía a otro proveedor.
+
+`GET /me` (requiere token) → `{ "id", "email", "role" }`, con `role` = `usuario` o `admin` sacado de `app_metadata.role` del token verificado.
 
 `GET /health` → `{ "status", "provider_mode", "gestora_mode", "api_key_configured" }`. Nunca devuelve la clave.
 
@@ -73,6 +76,9 @@ Copia `.env.example` a `.env` (Git lo ignora). **Nunca subas el `.env`.**
 | `GESTORA_TIMEOUT_S` | Espera máxima a Gemini | `4` |
 | `GESTORA_MAX_CALLS_PER_MIN` | Tope local de llamadas a Gemini | `15` |
 | `PRIVATE_ROUTE_URL` | Ruta privada (https) para el modo real | vacío |
+| `AUTH_MODE` | `required` o `disabled` (solo con `PROVIDER_MODE=mock`; con `real` se rechaza con 503). Cualquier otro valor deja la autenticación **activada** | `required` |
+| `SUPABASE_URL` | URL del proyecto de Supabase; de ahí salen el emisor del token y el JWKS. Sin ella: 503 | vacío |
+| `SUPABASE_JWT_SECRET` | Opcional: secreto HS256 "legado" de Supabase | vacío |
 
 ### Cómo obtener la clave de Gemini
 1. Entra a [Google AI Studio](https://aistudio.google.com/apikey) con tu cuenta de Google.
@@ -89,6 +95,8 @@ pip install -r requirements.txt
 copy .env.example .env      # y rellena GEMINI_API_KEY si quieres la Gestora real
 uvicorn app.main:app --reload --port 8000 --env-file .env
 ```
+
+Para desarrollar **sin Supabase**, pon `AUTH_MODE=disabled` en tu `.env` (solo vale con `PROVIDER_MODE=mock`); si no, `/orchestrate` responderá 401/503.
 
 El código **no lee** el `.env`: lo carga uvicorn con `--env-file .env` (por eso hay que pasarlo al arrancar). Sin esa opción la clave no se carga y la Gestora funciona solo con reglas.
 
@@ -114,7 +122,8 @@ El Dockerfile aún no se ha probado con `docker build` en este equipo.
 
 ## Pendientes
 
-- **Bloquean `PROVIDER_MODE=real`:** autenticación y límite por cliente (por ejemplo JWT de Supabase y rate limit); decidir dónde corre la ruta privada y crear un proveedor privado que use `PRIVATE_ROUTE_URL`.
+- **Bloquean `PROVIDER_MODE=real`:** límite de uso por usuario/cliente (rate limit y cuotas; la autenticación con JWT de Supabase ya está hecha); decidir dónde corre la ruta privada y crear un proveedor privado que use `PRIVATE_ROUTE_URL`; evaluar la Gestora (G-01).
+- Panel de administración (MVP-8): `require_admin` ya existe, falta una ruta que lo use.
 - Implementar `RealProvider` por proveedor (adaptadores independientes).
 - Guardar métricas en Supabase y mover las reglas a configuración editable.
 - Detalle y estado de cada hallazgo: [`../REVIEW-2026-10.md`](../REVIEW-2026-10.md).
